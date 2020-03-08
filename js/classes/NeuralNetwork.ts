@@ -10,20 +10,38 @@ type InputLayer = {
 
 type ConnectedLayer = {
   neurons?: number
-  weights: Matrix,
+  weights: Matrix
   bias: number
+}
+
+type TrainingOptions = {
+  iterations?: number
+  log?: boolean
+  logPeriod?: number
 }
 
 class NeuralNetwork {
   input: Vector
+
   inputLayer: InputLayer
   hiddenLayers: ConnectedLayer[]
   outputLayer: ConnectedLayer
+
   activations: Vector[]
+
   learningRate: number
+
   activationFunction: (x: number) => number
   activationFunctionInv: (x: number) => number
   activationFunctionPrime: (x: number) => number
+
+  allowActivationOverflow = true
+  allowBiasOverflow = true
+  trainingDelta = {
+    weights: 0.1,
+    biases: 0.1
+  }
+
 
   constructor(inputLayer: InputLayer, hiddenLayers: ConnectedLayer[], outputLayer: ConnectedLayer) {
     this.inputLayer = inputLayer
@@ -48,17 +66,17 @@ class NeuralNetwork {
 
     for (let i = 0; i < this.hiddenLayers.length; i++) {
       currentLayerVector = currentLayerVector
-      .multiplyWithMatrix(this.hiddenLayers[i].weights)
-      .each(x => x + this.hiddenLayers[i].bias)
-      .each(this.activationFunction)
+        .multiplyWithMatrix(this.hiddenLayers[i].weights)
+        .each(x => x + this.hiddenLayers[i].bias)
+        .each(this.activationFunction)
 
       this.activations[i + 1] = currentLayerVector
     }
 
     currentLayerVector = currentLayerVector
-    .multiplyWithMatrix(this.outputLayer.weights)
-    .each(x => x + this.outputLayer.bias)
-    .each(this.activationFunction)
+      .multiplyWithMatrix(this.outputLayer.weights)
+      .each(x => x + this.outputLayer.bias)
+      .each(this.activationFunction)
 
     this.activations[this.hiddenLayers.length + 1] = currentLayerVector
 
@@ -67,12 +85,30 @@ class NeuralNetwork {
 
   calculateCost(output: Vector, expectedOutput: Vector) {
     let cost = output
-    .subtract(expectedOutput)
-    .each(x => x ** 2).sum
+      .subtract(expectedOutput)
+      .each(x => x ** 2)
+      .sum
     return cost
   }
 
-  train(input: Vector, expectedOutput: Vector) {
+  calculateTotalCost(trainingData: { input: Vector, output: Vector }[]) {
+    let cost = 0
+
+    for (let i = 0; i < trainingData.length; i++) {
+      this.setInput(trainingData[i].input)
+
+      let output = this.run()
+
+      cost += output
+        .subtract(trainingData[i].output)
+        .each(x => x ** 2)
+        .sum
+    }
+
+    return cost
+  }
+
+  trainPlus(input: Vector, expectedOutput: Vector) {
     // Forward propagation
     this.setInput(input)
     let output = this.run()
@@ -135,6 +171,104 @@ class NeuralNetwork {
     console.log('cost: ' + cost_after)
   }
 
+  trainOnce(trainingData: { input: Vector, output: Vector }[]) {
+    let costBeforeTrainingIteration = this.calculateTotalCost(trainingData)
+
+    // Weights
+    let delta = this.trainingDelta.weights
+    let direction = 1
+
+    for (let layer = this.allLayers.length - 1; layer >= 0; layer--) {
+      for (let row = 0; row < this.allLayers[layer].weights.rows; row++) {
+        for (let col = 0; col < this.allLayers[layer].weights.cols; col++) {
+          // Calculate cost before
+          let costBefore = this.calculateTotalCost(trainingData)
+
+          // Change weight
+          this.allLayers[layer].weights.setElement(row, col,
+            this.allLayers[layer].weights.getElement(row, col) + delta * direction
+          )
+
+          if (!this.allowActivationOverflow) {
+            if (this.allLayers[layer].weights.getElement(row, col) > 1) {
+              this.allLayers[layer].weights.setElement(row, col, 1)
+            } else if (this.allLayers[layer].weights.getElement(row, col) < -1) {
+              this.allLayers[layer].weights.setElement(row, col, -1)
+            }
+          }
+
+          // Calculate cost after
+          let costAfter = this.calculateTotalCost(trainingData)
+
+          if (costAfter > costBefore) {
+            direction = (direction == 1) ? -1 : 1
+
+            this.allLayers[layer].weights.setElement(row, col,
+              this.allLayers[layer].weights.getElement(row, col) + delta * direction
+            )
+          }
+        }
+      }
+    }
+
+    // Biases
+    delta = this.trainingDelta.biases
+    direction = 1
+
+    for (let layer = this.allLayers.length - 1; layer >= 0; layer--) {
+      // Calculate cost before
+      let costBefore = this.calculateTotalCost(trainingData)
+
+      // Change bias
+      this.allLayers[layer].bias += delta * direction
+
+      if (!this.allowBiasOverflow) {
+        if (this.allLayers[layer].bias > 1) {
+          this.allLayers[layer].bias = 1
+        } else if (this.allLayers[layer].bias < -1) {
+          this.allLayers[layer].bias = -1
+        }
+      }
+
+      // Calculate cost after
+      let costAfter = this.calculateTotalCost(trainingData)
+
+      if (costAfter > costBefore) {
+        direction = (direction == 1) ? -1 : 1
+
+        this.allLayers[layer].bias += delta * direction
+      }
+    }
+
+    let costAfterTrainingIteration = this.calculateTotalCost(trainingData)
+
+    return {
+      costBefore: costBeforeTrainingIteration,
+      costAfter: costAfterTrainingIteration
+    }
+  }
+
+  train(trainingData: { input: Vector, output: Vector }[], options: TrainingOptions = {}) {
+    options = {
+      ...options,
+      ...{
+        iterations: 100,
+        log: true,
+        logPeriod: 10
+      }
+    }
+
+    for (let i = 0; i < options.iterations; i++) {
+      let trainingIteration = this.trainOnce(trainingData)
+
+      if (options.log) {
+        if (i % options.logPeriod == 0) {
+          console.log(`Iteration: ${i}, Cost: ${trainingIteration.costAfter}`)
+        }
+      }
+    }
+  }
+
   static createRandom(layers: number[]) {
     let hiddenLayers: ConnectedLayer[] = []
 
@@ -155,6 +289,10 @@ class NeuralNetwork {
 
   get layers() {
     return this.hiddenLayers.length + 2
+  }
+
+  get allLayers() {
+    return [ ...this.hiddenLayers, this.outputLayer]
   }
 }
 
